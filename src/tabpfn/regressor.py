@@ -551,7 +551,18 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         *,
         output_type: Literal["mean", "median", "mode"] = "mean",
         quantiles: list[float] | None = None,
+        return_attention: Literal[False] = False,
     ) -> np.ndarray: ...
+
+    @overload
+    def predict(
+        self,
+        X: XType,
+        *,
+        output_type: Literal["mean", "median", "mode"] = "mean",
+        quantiles: list[float] | None = None,
+        return_attention: Literal[True],
+    ) -> tuple[np.ndarray, list[torch.Tensor | None]]: ...
 
     @overload
     def predict(
@@ -560,7 +571,18 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         *,
         output_type: Literal["quantiles"],
         quantiles: list[float] | None = None,
+        return_attention: Literal[False] = False,
     ) -> list[np.ndarray]: ...
+
+    @overload
+    def predict(
+        self,
+        X: XType,
+        *,
+        output_type: Literal["quantiles"],
+        quantiles: list[float] | None = None,
+        return_attention: Literal[True],
+    ) -> tuple[list[np.ndarray], list[torch.Tensor | None]]: ...
 
     @overload
     def predict(
@@ -569,7 +591,18 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         *,
         output_type: Literal["main"],
         quantiles: list[float] | None = None,
+        return_attention: Literal[False] = False,
     ) -> MainOutputDict: ...
+
+    @overload
+    def predict(
+        self,
+        X: XType,
+        *,
+        output_type: Literal["main"],
+        quantiles: list[float] | None = None,
+        return_attention: Literal[True],
+    ) -> tuple[MainOutputDict, list[torch.Tensor | None]]: ...
 
     @overload
     def predict(
@@ -578,7 +611,18 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         *,
         output_type: Literal["full"],
         quantiles: list[float] | None = None,
+        return_attention: Literal[False] = False,
     ) -> FullOutputDict: ...
+
+    @overload
+    def predict(
+        self,
+        X: XType,
+        *,
+        output_type: Literal["full"],
+        quantiles: list[float] | None = None,
+        return_attention: Literal[True],
+    ) -> tuple[FullOutputDict, list[torch.Tensor | None]]: ...
 
     # FIXME: improve to not have noqa C901, PLR0912
     @config_context(transform_output="default")  # type: ignore
@@ -596,7 +640,17 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
             "main",
         ] = "mean",
         quantiles: list[float] | None = None,
-    ) -> np.ndarray | list[np.ndarray] | MainOutputDict | FullOutputDict:
+        return_attention: bool = False,
+    ) -> (
+        np.ndarray
+        | list[np.ndarray]
+        | MainOutputDict
+        | FullOutputDict
+        | tuple[np.ndarray, list[torch.Tensor | None]]
+        | tuple[list[np.ndarray], list[torch.Tensor | None]]
+        | tuple[MainOutputDict, list[torch.Tensor | None]]
+        | tuple[FullOutputDict, list[torch.Tensor | None]]
+    ):
         """Predict the target variable.
 
         Args:
@@ -620,9 +674,13 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
                 By default, the `[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]`
                 quantiles are returned. The predictions per quantile match
                 the input order.
+            return_attention: If True, also returns the attention probabilities
+                from the model. Defaults to False.
 
         Returns:
             The predicted target variable or a list of predictions per quantile.
+            If `return_attention` is True, returns a tuple containing the
+            prediction and a list of attention probability tensors.
         """
         check_is_fitted(self)
 
@@ -640,18 +698,29 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
             raise ValueError(f"Invalid output type: {output_type}")
 
         std_borders = self.bardist_.borders.cpu().numpy()
-        outputs: list[torch.Tensor] = []
+        logit_outputs: list[torch.Tensor] = []
         borders: list[np.ndarray] = []
+        all_attention_probs: list[torch.Tensor | None] = []
 
-        for output, config in self.executor_.iter_outputs(
+        for output_dict, config in self.executor_.iter_outputs(
             X,
             device=self.device_,
             autocast=self.use_autocast_,
         ):
+            assert isinstance(output_dict, dict), "Model output should be a dictionary."
+            current_logits = output_dict["standard"]
+            assert isinstance(current_logits, torch.Tensor)
+
+            if return_attention:
+                attention_probs = output_dict.get("attention_probabilities")
+                all_attention_probs.append(attention_probs)
+
             assert isinstance(config, RegressorEnsembleConfig)
 
             if self.softmax_temperature != 1:
-                output = output.float() / self.softmax_temperature  # noqa: PLW2901
+                current_logits = (
+                    current_logits.float() / self.softmax_temperature
+                )
 
             borders_t: np.ndarray
             logit_cancel_mask: np.ndarray | None
@@ -684,68 +753,71 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
             borders.append(borders_t)
 
             if logit_cancel_mask is not None:
-                output = output.clone()  # noqa: PLW2901
-                output[..., logit_cancel_mask] = float("-inf")
+                current_logits = current_logits.clone()
+                current_logits[..., logit_cancel_mask] = float("-inf")
 
-            outputs.append(output)  # type: ignore
+            logit_outputs.append(current_logits)
 
         transformed_logits = [
             translate_probs_across_borders(
-                logits,
+                single_logits, # Renamed for clarity
                 frm=torch.as_tensor(borders_t, device=self.device_),
                 to=self.bardist_.borders.to(self.device_),
             )
-            for logits, borders_t in zip(outputs, borders)
+            for single_logits, borders_t in zip(logit_outputs, borders) # Use logit_outputs
         ]
         stacked_logits = torch.stack(transformed_logits, dim=0)
         if self.average_before_softmax:
-            logits = stacked_logits.log().mean(dim=0).softmax(dim=-1)
+            final_logits = stacked_logits.log().mean(dim=0).softmax(dim=-1) # Renamed for clarity
         else:
-            logits = stacked_logits.mean(dim=0)
+            final_logits = stacked_logits.mean(dim=0) # Renamed for clarity
 
         # Post-process the logits
-        logits = logits.log()
-        if logits.dtype == torch.float16:
-            logits = logits.float()
-        logits = logits.cpu()
+        final_logits = final_logits.log()
+        if final_logits.dtype == torch.float16:
+            final_logits = final_logits.float()
+        final_logits = final_logits.cpu()
 
         # Determine and return intended output type
-        logit_to_output = partial(
+        logit_to_output_partial = partial( # Renamed for clarity
             _logits_to_output,
-            logits=logits,
+            logits=final_logits, # Use final_logits
             criterion=self.renormalized_criterion_,
             quantiles=quantiles,
         )
+        
+        prediction_result: (
+            np.ndarray | list[np.ndarray] | MainOutputDict | FullOutputDict
+        )
+
         if output_type in ["full", "main"]:
-            # Create a dictionary of outputs with proper typing via TypedDict
-            # Get individual outputs with proper typing
-            mean_out = typing.cast(np.ndarray, logit_to_output(output_type="mean"))
-            median_out = typing.cast(np.ndarray, logit_to_output(output_type="median"))
-            mode_out = typing.cast(np.ndarray, logit_to_output(output_type="mode"))
+            mean_out = typing.cast(np.ndarray, logit_to_output_partial(output_type="mean"))
+            median_out = typing.cast(np.ndarray, logit_to_output_partial(output_type="median"))
+            mode_out = typing.cast(np.ndarray, logit_to_output_partial(output_type="mode"))
             quantiles_out = typing.cast(
                 list[np.ndarray],
-                logit_to_output(output_type="quantiles"),
+                logit_to_output_partial(output_type="quantiles"),
             )
-
-            # Create our typed dictionary
-            main_outputs = MainOutputDict(
+            main_outputs_dict = MainOutputDict(
                 mean=mean_out,
                 median=median_out,
                 mode=mode_out,
                 quantiles=quantiles_out,
             )
-
             if output_type == "full":
-                # Return full output with criterion and logits
-                return FullOutputDict(
-                    **main_outputs,
+                prediction_result = FullOutputDict(
+                    **main_outputs_dict,
                     criterion=self.renormalized_criterion_,
-                    logits=logits,
+                    logits=final_logits, # Use final_logits
                 )
+            else: # output_type == "main"
+                prediction_result = main_outputs_dict
+        else: # "mean", "median", "mode", "quantiles"
+            prediction_result = logit_to_output_partial(output_type=output_type)
 
-            return main_outputs
-
-        return logit_to_output(output_type=output_type)
+        if return_attention:
+            return prediction_result, all_attention_probs
+        return prediction_result
 
     def get_embeddings(
         self,

@@ -533,14 +533,20 @@ class TabPFNClassifier(ClassifierMixin, BaseEstimator):
         return self.label_encoder_.inverse_transform(y)  # type: ignore
 
     @config_context(transform_output="default")  # type: ignore
-    def predict_proba(self, X: XType) -> np.ndarray:
+    def predict_proba(
+        self, X: XType, *, return_attention: bool = False
+    ) -> np.ndarray | tuple[np.ndarray, list[torch.Tensor | None]]:
         """Predict the probabilities of the classes for the provided input samples.
 
         Args:
             X: The input data.
+            return_attention: If True, also returns the attention probabilities
+                from the model. Defaults to False.
 
         Returns:
-            The predicted probabilities of the classes.
+            The predicted probabilities of the classes. If `return_attention` is True,
+            returns a tuple containing the probabilities and a list of attention
+            probability tensors.
         """
         check_is_fitted(self)
 
@@ -549,50 +555,77 @@ class TabPFNClassifier(ClassifierMixin, BaseEstimator):
 
         X = _process_text_na_dataframe(X, ord_encoder=self.preprocessor_)
 
-        outputs: list[torch.Tensor] = []
+        logit_outputs: list[torch.Tensor] = []
+        all_attention_probs: list[torch.Tensor | None] = []
 
-        for output, config in self.executor_.iter_outputs(
+        for output_dict, config in self.executor_.iter_outputs(
             X,
             device=self.device_,
             autocast=self.use_autocast_,
         ):
+            assert isinstance(output_dict, dict), "Model output should be a dictionary."
+            current_logits = output_dict["standard"]
+            assert isinstance(current_logits, torch.Tensor)
+
+            if return_attention:
+                attention_probs = output_dict.get("attention_probabilities")
+                # attention_probs can be None or a Tensor
+                all_attention_probs.append(attention_probs)
+
             assert isinstance(config, ClassifierEnsembleConfig)
             # Cut out logits for classes which do not exist
-            assert output.ndim == 2
+            assert current_logits.ndim == 2
 
             if self.softmax_temperature != 1:
-                output = (  # noqa: PLW2901
-                    output[:, : self.n_classes_].float() / self.softmax_temperature
+                current_logits = (
+                    current_logits[:, : self.n_classes_].float()
+                    / self.softmax_temperature
                 )
 
             # Reverse class permutation if exists
             if config.class_permutation is not None:
-                output = output[..., config.class_permutation]  # noqa: PLW2901
+                current_logits = current_logits[..., config.class_permutation]
 
-            outputs.append(output)
+            logit_outputs.append(current_logits)
 
         if self.average_before_softmax:
-            output = torch.stack(outputs).mean(dim=0)
-            output = torch.nn.functional.softmax(output, dim=1)
+            final_logits = torch.stack(logit_outputs).mean(dim=0)
+            final_probas = torch.nn.functional.softmax(final_logits, dim=1)
         else:
             # Softmax each 2d outputs before average
-            outputs = [torch.nn.functional.softmax(o, dim=1) for o in outputs]
-            output = torch.stack(outputs).mean(dim=0)
+            softmaxed_outputs = [
+                torch.nn.functional.softmax(o, dim=1) for o in logit_outputs
+            ]
+            final_probas = torch.stack(softmaxed_outputs).mean(dim=0)
 
         if self.balance_probabilities:
             class_prob_in_train = self.class_counts_ / self.class_counts_.sum()
-            output = output / torch.Tensor(class_prob_in_train).to(self.device_)
-            output = output / output.sum(dim=-1, keepdim=True)
+            final_probas = final_probas / torch.Tensor(class_prob_in_train).to(
+                self.device_
+            )
+            final_probas = final_probas / final_probas.sum(dim=-1, keepdim=True)
 
-        output = output.float().cpu().numpy()
+        final_probas_numpy = final_probas.float().cpu().numpy()
 
         if self.interface_config_.USE_SKLEARN_16_DECIMAL_PRECISION:
-            output = np.around(output, decimals=SKLEARN_16_DECIMAL_PRECISION)
-            output = np.where(output < PROBABILITY_EPSILON_ROUND_ZERO, 0.0, output)
+            final_probas_numpy = np.around(
+                final_probas_numpy, decimals=SKLEARN_16_DECIMAL_PRECISION
+            )
+            final_probas_numpy = np.where(
+                final_probas_numpy < PROBABILITY_EPSILON_ROUND_ZERO,
+                0.0,
+                final_probas_numpy,
+            )
 
         # Normalize to guarantee proba sum to 1, required due to precision issues and
         # going from torch to numpy
-        return output / output.sum(axis=1, keepdims=True)  # type: ignore
+        final_probas_numpy = final_probas_numpy / final_probas_numpy.sum(
+            axis=1, keepdims=True
+        )
+
+        if return_attention:
+            return final_probas_numpy, all_attention_probs
+        return final_probas_numpy
 
     def get_embeddings(
         self,

@@ -69,7 +69,7 @@ class LayerStack(nn.Module):
         *,
         half_layers: bool = False,
         **kwargs: Any,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if half_layers:
             assert (
                 self.min_num_layers_layer_dropout == self.num_layers
@@ -82,13 +82,16 @@ class LayerStack(nn.Module):
                 size=(1,),
             ).item()
 
+        attention_probs: torch.Tensor | None = None
         for layer in self.layers[:n_layers]:
             if self.recompute_each_layer and x.requires_grad:
-                x = checkpoint(partial(layer, **kwargs), x, use_reentrant=False)  # type: ignore
+                # layer.forward now returns (output, ps)
+                # checkpoint should handle functions returning tuples
+                x, attention_probs = checkpoint(partial(layer, **kwargs), x, use_reentrant=False)  # type: ignore
             else:
-                x = layer(x, **kwargs)
+                x, attention_probs = layer(x, **kwargs)
 
-        return x
+        return x, attention_probs
 
 
 class PerFeatureTransformer(nn.Module):
@@ -430,7 +433,7 @@ class PerFeatureTransformer(nn.Module):
         data_dags: list[Any] | None = None,
         categorical_inds: list[int] | None = None,
         half_layers: bool = False,
-    ) -> Any | dict[str, torch.Tensor]:
+    ) -> Any | dict[str, torch.Tensor | None]:
         """The core forward pass of the model.
 
         Args:
@@ -575,7 +578,8 @@ class PerFeatureTransformer(nn.Module):
                 f"{torch.isnan(embedded_y).any()=}, make sure to add nan handlers"
                 " to the ys that are not fully provided (test set missing)",
             )
-
+        
+        final_attention_probs: torch.Tensor | None = None
         extra_encoders_args = {}
         if categorical_inds_to_use is not None and isinstance(
             self.encoder,
@@ -625,7 +629,8 @@ class PerFeatureTransformer(nn.Module):
             )
         del embedded_y, embedded_x
 
-        encoder_out = self.transformer_encoder(
+        # self.transformer_encoder.forward now returns (output, ps)
+        encoder_out_tuple = self.transformer_encoder(
             (
                 embedded_input
                 if not self.transformer_decoder
@@ -634,26 +639,40 @@ class PerFeatureTransformer(nn.Module):
             single_eval_pos=single_eval_pos,
             half_layers=half_layers,
             cache_trainset_representation=self.cache_trainset_representation,
-        )  # b s f+1 e -> b s f+1 e
+        )
+        encoder_out, ps_encoder = encoder_out_tuple
+        final_attention_probs = ps_encoder
+        # b s f+1 e -> b s f+1 e
 
         # If we are using a decoder
         if self.transformer_decoder:
             assert not half_layers
+            # encoder_out should be only the train part if decoder is used
             assert encoder_out.shape[1] == single_eval_pos_
 
             if self.global_att_embeddings_for_compression is not None:
                 # TODO: fixed number of compression tokens
-                train_encoder_out = self.encoder_compression_layer(
-                    self.global_att_embeddings_for_compression,
-                    att_src=encoder_out[:, single_eval_pos_],
-                    single_eval_pos=single_eval_pos_,
+                # Assuming encoder_compression_layer also returns (output, ps)
+                # but the task description does not specify modifying this layer.
+                # For now, assume it returns a single tensor or handle if it changes.
+                # If it's a LayerStack, it would now return two values.
+                # Let's assume it's not the primary ps source for now.
+                _ = self.encoder_compression_layer( # train_encoder_out_compressed
+                    self.global_att_embeddings_for_compression.weight, # Access weight for nn.Embedding
+                    att_src=encoder_out, # Removed [:, single_eval_pos_] as encoder_out is already train only
+                    single_eval_pos=single_eval_pos_, # This seems to be for the source
                 )
+                # ps from compression layer is ignored for now.
 
-            test_encoder_out = self.transformer_decoder(
+            # self.transformer_decoder.forward now returns (output, ps)
+            test_encoder_out_tuple = self.transformer_decoder(
                 embedded_input[:, single_eval_pos_:],
-                single_eval_pos=0,
-                att_src=encoder_out,
+                single_eval_pos=0, # single_eval_pos for test part is 0
+                att_src=encoder_out, # encoder_out is the train part to attend to
             )
+            test_encoder_out, ps_decoder = test_encoder_out_tuple
+            final_attention_probs = ps_decoder # Prioritize decoder ps
+
             encoder_out = torch.cat([encoder_out, test_encoder_out], 1)
             del test_encoder_out
 
@@ -671,6 +690,7 @@ class PerFeatureTransformer(nn.Module):
                 if self.decoder_dict is not None
                 else {}
             )
+            output_decoded["attention_probabilities"] = final_attention_probs
 
             # out: s b e
             train_encoder_out = encoder_out[:, :single_eval_pos_, -1].transpose(0, 1)

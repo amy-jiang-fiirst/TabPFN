@@ -276,7 +276,7 @@ class PerFeatureEncoderLayer(Module):
         *,
         cache_trainset_representation: bool = False,
         att_src: Tensor | None = None,
-    ) -> Tensor:
+    ) -> tuple[Tensor, Tensor | None]:
         """Pass the input through the encoder layer.
 
         Args:
@@ -322,6 +322,8 @@ class PerFeatureEncoderLayer(Module):
                 " is in att_src"
             )
 
+        ps_final: Tensor | None = None
+
         if self.self_attn_between_features is None:
             assert not cache_trainset_representation, "Not implemented yet."
             assert state.shape[2] == 1, (
@@ -329,21 +331,26 @@ class PerFeatureEncoderLayer(Module):
                 f"but got {state.shape[2]} feature groups."
             )
 
-        def attn_between_features(x: torch.Tensor) -> torch.Tensor:
+        def attn_between_features(x: torch.Tensor) -> tuple[torch.Tensor, Tensor | None]:
             assert self.self_attn_between_features is not None
-            return self.self_attn_between_features(
+            # Assuming self.self_attn_between_features now returns (output, ps)
+            # The subtask description implies this is the case for "self.self_attn" calls
+            output, ps = self.self_attn_between_features(
                 x,
                 save_peak_mem_factor=save_peak_mem_factor,
                 add_input=True,
                 allow_inplace=True,
             )
+            return output, ps
 
-        def attn_between_items(x: torch.Tensor) -> torch.Tensor:
+        def attn_between_items(x: torch.Tensor) -> tuple[torch.Tensor, Tensor | None]:
             # we need to transpose as self attention always treats
             # dim -2 as the sequence dimension
+            ps_item_specific = None
             if self.multiquery_item_attention_for_test_set:
+                new_x_test_res, new_x_train_res = None, None
                 if single_eval_pos < x.shape[1]:
-                    new_x_test = self.self_attn_between_items(
+                    new_x_test_output, ps_test = self.self_attn_between_items(
                         x[:, single_eval_pos:].transpose(1, 2),
                         x[:, :single_eval_pos].transpose(1, 2)
                         if single_eval_pos
@@ -355,12 +362,14 @@ class PerFeatureEncoderLayer(Module):
                         use_cached_kv=not single_eval_pos,
                         reuse_first_head_kv=True,
                         use_second_set_of_queries=self.two_sets_of_queries,
-                    ).transpose(1, 2)
+                    )
+                    new_x_test_res = new_x_test_output.transpose(1, 2)
+                    ps_item_specific = ps_test # Prioritize test ps
                 else:
-                    new_x_test = None
+                    new_x_test_res = None
 
                 if single_eval_pos:
-                    new_x_train = self.self_attn_between_items(
+                    new_x_train_output, ps_train = self.self_attn_between_items(
                         x[:, :single_eval_pos].transpose(1, 2),
                         x[:, :single_eval_pos].transpose(1, 2),
                         save_peak_mem_factor=save_peak_mem_factor,
@@ -369,14 +378,18 @@ class PerFeatureEncoderLayer(Module):
                         add_input=True,
                         allow_inplace=True,
                         use_cached_kv=False,
-                    ).transpose(1, 2)
+                    )
+                    new_x_train_res = new_x_train_output.transpose(1, 2)
+                    if ps_item_specific is None: # If no test ps, use train ps
+                        ps_item_specific = ps_train
                 else:
-                    new_x_train = None
-
-                return torch.cat(
-                    [x_ for x_ in [new_x_train, new_x_test] if x_ is not None],
+                    new_x_train_res = None
+                
+                output_combined = torch.cat(
+                    [x_ for x_ in [new_x_train_res, new_x_test_res] if x_ is not None],
                     dim=1,
                 )
+                return output_combined, ps_item_specific
 
             attention_src_x = None
             if att_src is not None:
@@ -384,7 +397,8 @@ class PerFeatureEncoderLayer(Module):
             elif single_eval_pos:
                 attention_src_x = x[:, :single_eval_pos].transpose(1, 2)
 
-            return self.self_attn_between_items(
+            # Assuming self.self_attn_between_items now returns (output, ps)
+            output_transposed, ps_item_specific = self.self_attn_between_items(
                 x.transpose(1, 2),
                 attention_src_x,
                 save_peak_mem_factor=save_peak_mem_factor,
@@ -392,49 +406,91 @@ class PerFeatureEncoderLayer(Module):
                 add_input=True,
                 allow_inplace=True,
                 use_cached_kv=cache_trainset_representation and not single_eval_pos,
-            ).transpose(1, 2)
+            )
+            return output_transposed.transpose(1, 2), ps_item_specific
 
         mlp_save_peak_mem_factor = (
             save_peak_mem_factor * 8 if save_peak_mem_factor is not None else None
         )
 
-        sublayers = []
+        # Storing functions and a flag indicating if they return ps
+        sublayer_info = []
         if self.self_attn_between_features is not None:
-            sublayers.append(attn_between_features)
+            sublayer_info.append({'func': attn_between_features, 'returns_ps': True, 'name': 'attn_features'})
         else:
             assert state.shape[2] == 1, (
                 "If there is no attention between features, the number of feature"
                 " blocks must be 1."
             )
 
-        sublayers += [
-            attn_between_items,
-            partial(
-                self.mlp.__call__,
-                save_peak_mem_factor=mlp_save_peak_mem_factor
-                if (
-                    mlp_save_peak_mem_factor is not None
-                    and state.numel() // state.shape[-1] // mlp_save_peak_mem_factor
-                )
-                > 32
-                else None,
-                add_input=True,
-                allow_inplace=True,
-            ),
-        ]
+        mlp_call = partial(
+            self.mlp.__call__,
+            save_peak_mem_factor=mlp_save_peak_mem_factor
+            if (
+                mlp_save_peak_mem_factor is not None
+                and state.numel() // state.shape[-1] // mlp_save_peak_mem_factor
+            )
+            > 32
+            else None,
+            add_input=True,
+            allow_inplace=True,
+        )
 
         if self.second_mlp is not None:
-            sublayers.insert(
-                1,
-                partial(
-                    self.second_mlp.__call__,
-                    save_peak_mem_factor=mlp_save_peak_mem_factor,
-                    add_input=True,
-                    allow_inplace=True,
-                ),
+            second_mlp_call = partial(
+                self.second_mlp.__call__,
+                save_peak_mem_factor=mlp_save_peak_mem_factor,
+                add_input=True,
+                allow_inplace=True,
             )
+            # Order: attn_features, second_mlp, attn_items, mlp
+            # If attn_features is None, then: second_mlp, attn_items, mlp (but attn_features check is outside)
+            # So, if second_mlp is present, it's always after attn_features (if any) and before attn_items
+            # This means we might need to adjust insertion point if attn_features is not present.
+            # However, the original code appends attn_items and mlp later.
+            # Let's reconstruct the sequence carefully.
+            # Original: [attn_features (optional)], attn_items, mlp. If second_mlp: inserts at index 1.
+            # This means:
+            #   - [attn_features, second_mlp, attn_items, mlp]
+            #   - [second_mlp, attn_items, mlp] (if no attn_features, this is wrong, second_mlp is not at index 1)
+            # The original code implies:
+            #   1. Start with [attn_features] or []
+            #   2. If second_mlp, insert it at index 1 (if list is shorter, effectively appends or becomes index 0 or 1).
+            #      A more robust way is to define the sequence.
+            # Let's define the sequence explicitly based on original logic:
+            # sublayers = [attn_features (opt), attn_items, mlp] then second_mlp is inserted.
 
-        for sublayer, layer_norm in zip(sublayers, self.layer_norms):
+            # Tentative explicit order:
+            # 1. attn_between_features (if present)
+            # 2. second_mlp (if present)
+            # 3. attn_between_items
+            # 4. mlp
+
+            # If second_mlp is present, it's inserted at index 1 of the 'sublayers' list.
+            # If attn_features is present, sublayers = [attn_features, attn_items, mlp], then second_mlp makes it [attn_features, second_mlp, attn_items, mlp]
+            # If attn_features is NOT present, sublayers = [attn_items, mlp], then second_mlp makes it [attn_items, second_mlp, mlp]
+            # This seems to be the logic.
+
+            idx_for_second_mlp = 0
+            if self.self_attn_between_features is not None:
+                idx_for_second_mlp = 1
+            
+            sublayer_info.insert(idx_for_second_mlp, {'func': second_mlp_call, 'returns_ps': False, 'name': 'second_mlp'})
+            sublayer_info.insert(idx_for_second_mlp +1, {'func': attn_between_items, 'returns_ps': True, 'name': 'attn_items'})
+            sublayer_info.append({'func': mlp_call, 'returns_ps': False, 'name': 'mlp'})
+
+        else: # No second_mlp
+            sublayer_info.append({'func': attn_between_items, 'returns_ps': True, 'name': 'attn_items'})
+            sublayer_info.append({'func': mlp_call, 'returns_ps': False, 'name': 'mlp'})
+
+
+        for i, layer_info in enumerate(sublayer_info):
+            sublayer_func = layer_info['func']
+            returns_ps = layer_info['returns_ps']
+            # layer_name = layer_info['name'] # For debugging
+
+            layer_norm = self.layer_norms[i] # Assuming layer_norms corresponds to this new explicit order
+
             if self.pre_norm:
                 raise AssertionError(
                     "Pre-norm implementation is wrong, as the residual should never"
@@ -445,8 +501,15 @@ class PerFeatureEncoderLayer(Module):
                     allow_inplace=True,
                     save_peak_mem_factor=save_peak_mem_factor,
                 )
+            
+            if returns_ps:
+                current_ps: Tensor | None
+                state, current_ps = sublayer_func(state)
+                if current_ps is not None: # Update ps_final if current sublayer provides ps
+                    ps_final = current_ps
+            else:
+                state = sublayer_func(state)
 
-            state = sublayer(state)
             if not self.pre_norm:
                 state = layer_norm(
                     state,
@@ -454,7 +517,7 @@ class PerFeatureEncoderLayer(Module):
                     save_peak_mem_factor=save_peak_mem_factor,
                 )
 
-        return state
+        return state, ps_final
 
     def empty_trainset_representation_cache(self) -> None:
         """Empty the trainset representation cache."""

@@ -89,6 +89,89 @@ def test_regressor(
         },
     )
 
+
+def _compare_predictions_regressor(pred1, pred2, output_type_for_comparison):
+    """Helper function to compare prediction outputs for TabPFNRegressor."""
+    if output_type_for_comparison == "quantiles":
+        assert isinstance(pred1, list) and isinstance(pred2, list), \
+            f"Type mismatch for quantiles: {type(pred1)}, {type(pred2)}"
+        assert len(pred1) == len(pred2), "Length mismatch for quantiles"
+        for p1_i, p2_i in zip(pred1, pred2):
+            np.testing.assert_allclose(p1_i, p2_i, rtol=1e-6, atol=1e-6)
+    elif isinstance(pred1, np.ndarray):
+        assert isinstance(pred2, np.ndarray), f"Type mismatch for ndarray: {type(pred1)}, {type(pred2)}"
+        np.testing.assert_allclose(pred1, pred2, rtol=1e-6, atol=1e-6)
+    elif isinstance(pred1, dict):  # For "main" or "full"
+        assert isinstance(pred2, dict), f"Type mismatch for dict: {type(pred1)}, {type(pred2)}"
+        # For 'full' output type, 'logits' and 'criterion' might have different orders
+        # or might not be present if one call was 'main' and other 'full'.
+        # We only compare common keys that are expected to match.
+        common_keys = pred1.keys() & pred2.keys()
+        assert len(common_keys) > 0, "No common keys to compare in dicts"
+
+        for key in common_keys:
+            if key == "criterion":  # Skip non-numeric FullSupportBarDistribution
+                assert type(pred1[key]) == type(pred2[key])
+                continue
+            if key == "logits":  # Skip torch.Tensor logits for now, or convert to numpy
+                if isinstance(pred1[key], torch.Tensor) and isinstance(pred2[key], torch.Tensor):
+                    np.testing.assert_allclose(pred1[key].cpu().numpy(), pred2[key].cpu().numpy(), rtol=1e-6, atol=1e-6)
+                # If one is None (e.g. comparing 'main' with 'full'), skip direct comparison of logits
+                elif pred1[key] is not None and pred2[key] is not None:
+                     assert type(pred1[key]) == type(pred2[key])
+                continue
+            # Determine the type for recursive comparison based on the key
+            recursive_output_type = "quantiles" if key == "quantiles" else "mean" # 'mean' is a placeholder for ndarray comparison
+            _compare_predictions_regressor(pred1[key], pred2[key], recursive_output_type)
+    else:
+        # Fallback for any other types, though not expected for standard outputs
+        assert pred1 == pred2, f"Prediction mismatch for unknown type: {type(pred1)}"
+
+
+def test_predict_with_attention(X_y: tuple[np.ndarray, np.ndarray]) -> None:
+    """Test that predict with return_attention=True works correctly."""
+    X, y = X_y
+    # Ensure X_test has enough samples for batching if relevant internally
+    X_test = X[:10] if X.shape[0] >=10 else X 
+
+    output_types_to_test: list[Literal["mean", "quantiles", "full", "main"]] = ["mean", "quantiles", "full", "main"]
+
+    for n_est in [1, 2]:
+        model = TabPFNRegressor(n_estimators=n_est, device="cpu", random_state=42)
+        model.fit(X, y)
+
+        for output_type in output_types_to_test:
+            # Call without attention
+            preds_no_att = model.predict(X_test, output_type=output_type)
+
+            # Call with attention
+            result_with_att = model.predict(X_test, output_type=output_type, return_attention=True)
+            assert isinstance(result_with_att, tuple), \
+                f"Result type mismatch for n_est={n_est}, output_type='{output_type}'"
+            assert len(result_with_att) == 2, \
+                f"Result tuple length mismatch for n_est={n_est}, output_type='{output_type}'"
+
+            preds_with_att, att_list = result_with_att
+            
+            # Compare predictions
+            # For 'full' output_type, preds_no_att will not have 'attention_probabilities'
+            # but preds_with_att might if the underlying dict structure passes it.
+            # The comparison helper should handle this by comparing common keys.
+            _compare_predictions_regressor(preds_no_att, preds_with_att, output_type)
+            
+            assert isinstance(att_list, list)
+            assert len(att_list) == n_est
+
+            for att_tensor in att_list:
+                assert att_tensor is None or isinstance(att_tensor, torch.Tensor)
+                if isinstance(att_tensor, torch.Tensor):
+                    assert att_tensor.ndim >= 3
+                    assert att_tensor.shape[0] == X_test.shape[0]
+                    if hasattr(model, "model_") and hasattr(model.model_, "nhead"):
+                        assert att_tensor.shape[1] == model.model_.nhead
+                    assert att_tensor.shape[2] > 0 
+                    assert att_tensor.shape[3] > 0
+
     X, y = X_y
 
     returned_model = model.fit(X, y)

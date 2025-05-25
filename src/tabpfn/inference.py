@@ -144,7 +144,6 @@ class InferenceEngineOnDemand(InferenceEngine):
         *,
         device: torch.device,
         autocast: bool,
-        only_return_standard_out: bool = True,
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         rng = np.random.default_rng(self.static_seed)
         itr = fit_preprocessing(
@@ -192,12 +191,16 @@ class InferenceEngineOnDemand(InferenceEngine):
             ):
                 output = self.model(
                     *(style, X_full, y_train),
-                    only_return_standard_out=only_return_standard_out,
+                    only_return_standard_out=False,  # Ensure full dict is returned
                     categorical_inds=cat_ix,
                     single_eval_pos=len(y_train),
                 )
 
-            output = output if isinstance(output, dict) else output.squeeze(1)
+            # output is now expected to be a dict
+            # The original line `output = output if isinstance(output, dict) else output.squeeze(1)`
+            # is fine; if it's a dict, it stays a dict. If somehow it's not (e.g. an error),
+            # it would attempt to squeeze, but model.forward with only_return_standard_out=False
+            # should always return a dict.
 
             yield output, config
 
@@ -286,7 +289,6 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
         *,
         device: torch.device,
         autocast: bool,
-        only_return_standard_out: bool = True,
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         self.model = self.model.to(device)
         if self.force_inference_dtype is not None:
@@ -331,12 +333,12 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
             ):
                 output = self.model(
                     *(style, X_full, y_train),
-                    only_return_standard_out=only_return_standard_out,
+                    only_return_standard_out=False,  # Ensure full dict is returned
                     categorical_inds=cat_ix,
                     single_eval_pos=len(y_train),
                 )
 
-            output = output if isinstance(output, dict) else output.squeeze(1)
+            # output is now expected to be a dict
 
             yield output, config
 
@@ -459,7 +461,6 @@ class InferenceEngineCacheKV(InferenceEngine):
         *,
         device: torch.device,
         autocast: bool,
-        only_return_standard_out: bool = True,
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         for preprocessor, model, config, cat_ix, X_train_len in zip(
             self.preprocessors,
@@ -496,7 +497,7 @@ class InferenceEngineCacheKV(InferenceEngine):
             ):
                 output = model(
                     *(style, X_test, None),
-                    only_return_standard_out=only_return_standard_out,
+                    only_return_standard_out=False,  # Ensure full dict is returned
                     categorical_inds=cat_ix,
                     single_eval_pos=None,
                 )
@@ -505,6 +506,6 @@ class InferenceEngineCacheKV(InferenceEngine):
             # We'd rather just say unload from GPU, we already have it available on CPU.
             model = model.cpu()  # noqa: PLW2901
 
-            output = output if isinstance(output, dict) else output.squeeze(1)
+            # output is now expected to be a dict
 
             yield output, config

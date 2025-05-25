@@ -501,7 +501,7 @@ class MultiHeadAttention(torch.nn.Module):
             reuse_first_head_kv=reuse_first_head_kv,
             use_second_set_of_queries=use_second_set_of_queries,
         )
-        attention_head_outputs = MultiHeadAttention.compute_attention_heads(
+        attention_head_outputs, _ = MultiHeadAttention.compute_attention_heads(
             q,
             k,
             v,
@@ -553,7 +553,7 @@ class MultiHeadAttention(torch.nn.Module):
         qkv: torch.Tensor | None,
         dropout_p: float | None = None,
         softmax_scale: float | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         assert (k is None) == (v is None)
         assert sum([qkv is None, kv is None, k is None and v is None]) == 2
         assert (qkv is None) != (q is None)
@@ -566,6 +566,8 @@ class MultiHeadAttention(torch.nn.Module):
         assert q is not None
         assert k is not None
         assert v is not None
+
+        ps = None
 
         batch_size, seqlen_q, nhead, d_k = q.shape
         _, seqlen_kv, nhead_kv, d_v = v.shape
@@ -639,9 +641,10 @@ class MultiHeadAttention(torch.nn.Module):
                     dropout_p=dropout_p,
                     softmax_scale=softmax_scale,  # defaults to 1/sqrt(d_k) if None
                     causal=False,
-                    return_attn_probs=False,
+                    return_attn_probs=True,
                     deterministic=False,
                 )
+                attention_head_outputs, _, ps = attention_head_outputs
             elif kv is not None:
                 kv = MultiHeadAttention.broadcast_kv_across_heads(
                     kv,
@@ -656,9 +659,10 @@ class MultiHeadAttention(torch.nn.Module):
                     seqlen_kv,
                     dropout_p=dropout_p,
                     causal=False,
-                    return_attn_probs=False,
+                    return_attn_probs=True,
                     deterministic=False,
                 )
+                attention_head_outputs, _, ps = attention_head_outputs
             else:
                 assert d_k <= d_v, (
                     "This requirement is here for safety but not strictly necessary."
@@ -687,9 +691,10 @@ class MultiHeadAttention(torch.nn.Module):
                     dropout_p=dropout_p,
                     softmax_scale=softmax_scale,
                     causal=False,
-                    return_attn_probs=False,
+                    return_attn_probs=True,
                     deterministic=False,
                 )
+                attention_head_outputs, _, ps = attention_head_outputs
         elif TORCH_2_ATTENTION_POSSIBLE:
             extra_inputs = {}
             if softmax_scale is not None:
@@ -712,8 +717,10 @@ class MultiHeadAttention(torch.nn.Module):
                 k.transpose(1, 2),
                 v.transpose(1, 2),
                 dropout_p=dropout_p,
+                need_weights=True,
                 **extra_inputs,
             )
+            attention_head_outputs, ps = attention_head_outputs
             attention_head_outputs = attention_head_outputs.transpose(1, 2)
         else:
             k = MultiHeadAttention.broadcast_kv_across_heads(k, share_kv_across_n_heads)
@@ -733,7 +740,7 @@ class MultiHeadAttention(torch.nn.Module):
             seqlen_q,
             nhead,
             d_v,
-        )
+        ), ps
 
     @staticmethod
     def convert_torch_nn_multihead_attention_state_dict(
