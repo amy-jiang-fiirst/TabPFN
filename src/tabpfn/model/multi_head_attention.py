@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from functools import partial
+from packaging.version import parse as parse_version
 from typing_extensions import override
 
 import torch
@@ -712,15 +713,30 @@ class MultiHeadAttention(torch.nn.Module):
                 )
             else:
                 extra_inputs["enable_gqa"] = True
-            attention_head_outputs = torch.nn.functional.scaled_dot_product_attention(
-                q.transpose(1, 2),
-                k.transpose(1, 2),
-                v.transpose(1, 2),
-                dropout_p=dropout_p,
-                need_weights=True,
-                **extra_inputs,
-            )
-            attention_head_outputs, ps = attention_head_outputs
+            
+            if parse_version(torch.__version__) >= parse_version("2.0.0"):
+                attention_head_outputs_tuple = torch.nn.functional.scaled_dot_product_attention(
+                    q.transpose(1, 2),
+                    k.transpose(1, 2),
+                    v.transpose(1, 2),
+                    dropout_p=dropout_p,
+                    need_weights=True,
+                    **extra_inputs,
+                )
+                attention_head_outputs, ps = attention_head_outputs_tuple
+            else:
+                # For older PyTorch versions that might not support need_weights or handle it differently
+                # or if need_weights=False is explicitly desired for versions < 2.0 where it might be default
+                attention_head_outputs = torch.nn.functional.scaled_dot_product_attention(
+                    q.transpose(1, 2),
+                    k.transpose(1, 2),
+                    v.transpose(1, 2),
+                    dropout_p=dropout_p,
+                    # need_weights is not specified, defaults to False or behavior of older version
+                    **extra_inputs,
+                )
+                # ps remains None as initialized
+            
             attention_head_outputs = attention_head_outputs.transpose(1, 2)
         else:
             k = MultiHeadAttention.broadcast_kv_across_heads(k, share_kv_across_n_heads)

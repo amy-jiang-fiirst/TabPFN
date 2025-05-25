@@ -45,11 +45,12 @@ def visualize_attention():
     # We'll use the attention from the first estimator for this example.
     # The attention_list contains tensors which might be None if something went wrong
     # or if attention couldn't be extracted (e.g. flash attention not available/configured for probs)
+    # It can also be None if using PyTorch < 2.0, as some attention mechanisms might not support probability extraction in older versions.
     raw_attention_matrix = attention_list[0]
 
     if raw_attention_matrix is None:
         print("The first attention matrix is None. Cannot visualize.")
-        print("This might happen if `ps` was not captured correctly in MultiHeadAttention for certain paths (e.g. Flash Attention).")
+        print("This might happen if `ps` was not captured correctly in MultiHeadAttention for certain paths (e.g. Flash Attention or PyTorch < 2.0 with certain attention code paths).")
         return
 
     print(f"Raw attention matrix shape: {raw_attention_matrix.shape}")
