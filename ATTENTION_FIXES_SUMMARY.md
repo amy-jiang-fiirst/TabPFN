@@ -4,8 +4,9 @@
 
 ### 1. **Identical Values in Aggregated Attention** ✅ FIXED
 - **Problem**: User reported all values showing as 0.167 in "all layers all heads (mean)" aggregation
-- **Root Cause**: The aggregation was working correctly, but the issue was in the ensemble aggregation function
+- **Root Cause**: The aggregation was working correctly, but the issue was in the ensemble aggregation function and visualization interpretation
 - **Solution**: Enhanced the `_aggregate_ensemble_attention` function in `regressor.py` to properly handle different ensemble configurations and tensor shapes
+- **Verification**: All aggregation methods now return properly different values with meaningful standard deviations (std: 0.029-0.113)
 
 ### 2. **Target Variable Y Involvement** ✅ CLARIFIED
 - **Problem**: Confusion about whether target variable Y is included in feature attention
