@@ -628,10 +628,16 @@ class PerFeatureEncoderLayer(Module):
             elif attention_type == "items" and ps_item_attention is not None:
                 return state, ps_item_attention
             else:
-                # Fallback to the last attention computed
-                return state, ps_final
+                # Default to items attention if available, otherwise features attention
+                if ps_item_attention is not None:
+                    return state, ps_item_attention
+                elif ps_feature_attention is not None:
+                    return state, ps_feature_attention
+                else:
+                    return state, ps_final
         else:
-            return state, ps_final
+            # Don't return attention if we're not extracting from this layer
+            return state, None
 
     def empty_trainset_representation_cache(self) -> None:
         """Empty the trainset representation cache."""

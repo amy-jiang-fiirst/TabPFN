@@ -372,6 +372,9 @@ class MultiHeadAttention(torch.nn.Module):
                 attention_layer=attention_layer,
                 attention_head=attention_head,
                 attention_aggregation=attention_aggregation,
+                add_input=add_input,
+                allow_inplace=allow_inplace,
+                save_peak_mem_factor=save_peak_mem_factor,
             )
             output_reshaped = output.reshape(x_shape_after_transpose[:-1] + output.shape[-1:])
             return output_reshaped, attention_probs
@@ -513,6 +516,9 @@ class MultiHeadAttention(torch.nn.Module):
         attention_layer: int | None = None,
         attention_head: int | None = None,
         attention_aggregation: str = "mean",
+        add_input: bool = False,
+        allow_inplace: bool = False,
+        save_peak_mem_factor: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Attention computation that returns attention weights.
         This method bypasses memory caching to avoid tuple handling issues.
@@ -546,6 +552,10 @@ class MultiHeadAttention(torch.nn.Module):
             attention_head_outputs,
             self._w_out,
         )
+        
+        # Apply add_input if specified (to match _compute behavior)
+        if add_input:
+            output = output + x
         
         return output, attention_probs
 
@@ -865,7 +875,7 @@ class MultiHeadAttention(torch.nn.Module):
             ps = torch.dropout(ps, dropout_p, train=True)
             attention_head_outputs = torch.einsum("b q k h, b k h d -> b q h d", ps, v)
 
-        # Apply layer and head filtering if specified
+        # Apply head filtering and aggregation if specified
         if return_attention and ps is not None:
             # ps shape: [batch_size, seqlen_q, seqlen_k, nhead]
             if attention_head is not None:
@@ -876,12 +886,14 @@ class MultiHeadAttention(torch.nn.Module):
                     # If head index is out of range, return None
                     ps = None
             
-            if ps is not None and attention_aggregation == "max":
-                # Apply max aggregation across heads
-                ps = torch.max(ps, dim=-1, keepdim=True)[0]
-            elif ps is not None and attention_aggregation == "mean":
-                # Apply mean aggregation across heads (default)
-                ps = torch.mean(ps, dim=-1, keepdim=True)
+            if ps is not None:
+                if attention_aggregation == "max":
+                    # Apply max aggregation across heads
+                    ps = torch.max(ps, dim=-1, keepdim=True)[0]
+                elif attention_aggregation == "mean":
+                    # Apply mean aggregation across heads (default)
+                    ps = torch.mean(ps, dim=-1, keepdim=True)
+                # If attention_aggregation is "none" or anything else, keep all heads
 
         return attention_head_outputs.reshape(
             batch_size,

@@ -83,6 +83,11 @@ class LayerStack(nn.Module):
             ).item()
 
         attention_probs: torch.Tensor | None = None
+        all_layer_attentions = []
+        
+        # Check if we're extracting attention from a specific layer
+        extract_specific_layer = kwargs.get('return_attention', False) and kwargs.get('attention_layer', None) is not None
+        
         for layer_idx, layer in enumerate(self.layers[:n_layers]):
             # Add current layer index to kwargs for attention filtering
             layer_kwargs = kwargs.copy()
@@ -95,9 +100,19 @@ class LayerStack(nn.Module):
             else:
                 x, layer_attention = layer(x, **layer_kwargs)
             
-            # Only update attention_probs if the layer returned non-None attention
+            # Collect attention from all layers if not extracting from specific layer
             if layer_attention is not None:
-                attention_probs = layer_attention
+                if extract_specific_layer:
+                    # Only keep attention from the specified layer
+                    attention_probs = layer_attention
+                else:
+                    # Collect all layer attentions
+                    all_layer_attentions.append(layer_attention)
+                    attention_probs = layer_attention  # Keep the last one as fallback
+
+        # If we collected multiple layers and no specific layer was requested, return all
+        if not extract_specific_layer and len(all_layer_attentions) > 1 and kwargs.get('return_attention', False):
+            attention_probs = all_layer_attentions
 
         return x, attention_probs
 

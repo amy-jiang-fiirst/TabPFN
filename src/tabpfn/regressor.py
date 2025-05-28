@@ -865,7 +865,12 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
             prediction_result = logit_to_output_partial(output_type=output_type)
 
         if return_attention:
-            return prediction_result, all_attention_probs
+            # Aggregate attention matrices from multiple ensemble configurations
+            aggregated_attention = _aggregate_ensemble_attention(
+                all_attention_probs, 
+                attention_aggregation
+            )
+            return prediction_result, aggregated_attention
         return prediction_result
 
     def get_embeddings(
@@ -918,3 +923,65 @@ def _logits_to_output(
         raise ValueError(f"Invalid output type: {output_type}")
 
     return output.cpu().detach().numpy()  # type: ignore
+
+
+def _aggregate_ensemble_attention(
+    all_attention_probs: list[torch.Tensor | None], 
+    attention_aggregation: str = "mean"
+) -> torch.Tensor | None:
+    """
+    Aggregate attention matrices from multiple ensemble configurations.
+    
+    Args:
+        all_attention_probs: List of attention tensors from different ensemble configs
+        attention_aggregation: Method to aggregate ("mean" or "max")
+        
+    Returns:
+        Single aggregated attention tensor or None if no valid attention found
+    """
+    import torch
+    from collections import defaultdict
+    
+    # Filter out None values and handle nested lists
+    valid_attention = []
+    for att in all_attention_probs:
+        if att is not None:
+            if isinstance(att, list):
+                # If it's a list (from all layers), flatten it
+                valid_attention.extend([a for a in att if a is not None])
+            else:
+                valid_attention.append(att)
+    
+    if not valid_attention:
+        return None
+    
+    # Group tensors by shape to handle different ensemble configurations
+    shape_groups = defaultdict(list)
+    for att in valid_attention:
+        if hasattr(att, 'shape'):
+            shape_groups[tuple(att.shape)].append(att)
+    
+    if not shape_groups:
+        return None
+    
+    # Find the most common shape group
+    largest_group = max(shape_groups.values(), key=len)
+    
+    # Aggregate tensors within the largest group
+    try:
+        stacked_attention = torch.stack(largest_group, dim=0)
+        
+        # Aggregate across ensemble dimension (dim=0)
+        if attention_aggregation == "mean":
+            aggregated = stacked_attention.mean(dim=0)
+        elif attention_aggregation == "max":
+            aggregated = stacked_attention.max(dim=0)[0]  # max returns (values, indices)
+        else:
+            raise ValueError(f"Invalid attention_aggregation: {attention_aggregation}")
+            
+        return aggregated
+        
+    except Exception as e:
+        # If stacking still fails, return the first valid attention
+        print(f"Warning: Failed to aggregate attention matrices: {e}")
+        return valid_attention[0]
