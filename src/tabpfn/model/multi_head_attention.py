@@ -807,15 +807,37 @@ class MultiHeadAttention(torch.nn.Module):
                 extra_inputs["enable_gqa"] = True
             
             if parse_version(torch.__version__) >= parse_version("2.0.0"):
-                attention_head_outputs_tuple = torch.nn.functional.scaled_dot_product_attention(
-                    q.transpose(1, 2),
-                    k.transpose(1, 2),
-                    v.transpose(1, 2),
-                    dropout_p=dropout_p,
-                    need_weights=True,
-                    **extra_inputs,
-                )
-                attention_head_outputs, ps = attention_head_outputs_tuple
+                # For PyTorch 2.0+, scaled_dot_product_attention doesn't support need_weights
+                # We need to implement manual attention when weights are required
+                if return_attention:
+                    # Manual attention computation to get attention weights
+                    q_t = q.transpose(1, 2)  # [batch, seq_q, nhead, d_k]
+                    k_t = k.transpose(1, 2)  # [batch, seq_k, nhead, d_k]
+                    v_t = v.transpose(1, 2)  # [batch, seq_k, nhead, d_v]
+                    
+                    # Compute attention scores
+                    scale = 1.0 / math.sqrt(q_t.size(-1)) if softmax_scale is None else softmax_scale
+                    scores = torch.matmul(q_t, k_t.transpose(-2, -1)) * scale
+                    
+                    # Apply softmax to get attention weights
+                    ps = torch.softmax(scores, dim=-1)
+                    
+                    # Apply dropout if specified
+                    if dropout_p > 0:
+                        ps = torch.dropout(ps, dropout_p, train=True)
+                    
+                    # Apply attention weights to values
+                    attention_head_outputs = torch.matmul(ps, v_t)
+                else:
+                    # Use optimized scaled_dot_product_attention when weights not needed
+                    attention_head_outputs = torch.nn.functional.scaled_dot_product_attention(
+                        q.transpose(1, 2),
+                        k.transpose(1, 2),
+                        v.transpose(1, 2),
+                        dropout_p=dropout_p,
+                        **extra_inputs,
+                    )
+                    ps = None
             else:
                 # For older PyTorch versions that might not support need_weights or handle it differently
                 # or if need_weights=False is explicitly desired for versions < 2.0 where it might be default
