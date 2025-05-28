@@ -706,6 +706,7 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
             X,
             device=self.device_,
             autocast=self.use_autocast_,
+            return_attention=return_attention,
         ):
             assert isinstance(output_dict, dict), "Model output should be a dictionary."
             current_logits = output_dict["standard"]

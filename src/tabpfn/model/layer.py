@@ -276,9 +276,10 @@ class PerFeatureEncoderLayer(Module):
         *,
         cache_trainset_representation: bool = False,
         att_src: Tensor | None = None,
+        return_attention: bool = False,
     ) -> tuple[Tensor, Tensor | None]:
         """Pass the input through the encoder layer.
-
+        
         Args:
             state:
                 The transformer state passed as input to the layer of shape
@@ -301,6 +302,7 @@ class PerFeatureEncoderLayer(Module):
         Returns:
             The transformer state passed through the encoder layer.
         """
+
         assert (
             len(state.shape) == 4
         ), "src must be of shape (batch_size, num_items, num feature blocks, d_model)"
@@ -335,13 +337,23 @@ class PerFeatureEncoderLayer(Module):
             assert self.self_attn_between_features is not None
             # Assuming self.self_attn_between_features now returns (output, ps)
             # The subtask description implies this is the case for "self.self_attn" calls
-            output, ps = self.self_attn_between_features(
-                x,
-                save_peak_mem_factor=save_peak_mem_factor,
-                add_input=True,
-                allow_inplace=True,
-            )
-            return output, ps
+            if return_attention:
+                output, ps = self.self_attn_between_features(
+                    x,
+                    save_peak_mem_factor=save_peak_mem_factor,
+                    add_input=True,
+                    allow_inplace=True,
+                    return_attention=return_attention,
+                )
+                return output, ps
+            else:
+                output = self.self_attn_between_features(
+                    x,
+                    save_peak_mem_factor=save_peak_mem_factor,
+                    add_input=True,
+                    allow_inplace=True,
+                )
+                return output, None
 
         def attn_between_items(x: torch.Tensor) -> tuple[torch.Tensor, Tensor | None]:
             # we need to transpose as self attention always treats
@@ -350,35 +362,66 @@ class PerFeatureEncoderLayer(Module):
             if self.multiquery_item_attention_for_test_set:
                 new_x_test_res, new_x_train_res = None, None
                 if single_eval_pos < x.shape[1]:
-                    new_x_test_output, ps_test = self.self_attn_between_items(
-                        x[:, single_eval_pos:].transpose(1, 2),
-                        x[:, :single_eval_pos].transpose(1, 2)
-                        if single_eval_pos
-                        else None,
-                        save_peak_mem_factor=save_peak_mem_factor,
-                        cache_kv=False,
-                        add_input=True,
-                        allow_inplace=True,
-                        use_cached_kv=not single_eval_pos,
-                        reuse_first_head_kv=True,
-                        use_second_set_of_queries=self.two_sets_of_queries,
-                    )
+                    if return_attention:
+                        new_x_test_output, ps_test = self.self_attn_between_items(
+                            x[:, single_eval_pos:].transpose(1, 2),
+                            x[:, :single_eval_pos].transpose(1, 2)
+                            if single_eval_pos
+                            else None,
+                            save_peak_mem_factor=save_peak_mem_factor,
+                            cache_kv=False,
+                            add_input=True,
+                            allow_inplace=True,
+                            use_cached_kv=not single_eval_pos,
+                            reuse_first_head_kv=True,
+                            use_second_set_of_queries=self.two_sets_of_queries,
+                            return_attention=return_attention,
+                        )
+                    else:
+                        new_x_test_output = self.self_attn_between_items(
+                            x[:, single_eval_pos:].transpose(1, 2),
+                            x[:, :single_eval_pos].transpose(1, 2)
+                            if single_eval_pos
+                            else None,
+                            save_peak_mem_factor=save_peak_mem_factor,
+                            cache_kv=False,
+                            add_input=True,
+                            allow_inplace=True,
+                            use_cached_kv=not single_eval_pos,
+                            reuse_first_head_kv=True,
+                            use_second_set_of_queries=self.two_sets_of_queries,
+                        )
+                        ps_test = None
                     new_x_test_res = new_x_test_output.transpose(1, 2)
                     ps_item_specific = ps_test # Prioritize test ps
                 else:
                     new_x_test_res = None
 
                 if single_eval_pos:
-                    new_x_train_output, ps_train = self.self_attn_between_items(
-                        x[:, :single_eval_pos].transpose(1, 2),
-                        x[:, :single_eval_pos].transpose(1, 2),
-                        save_peak_mem_factor=save_peak_mem_factor,
-                        cache_kv=cache_trainset_representation,
-                        only_cache_first_head_kv=True,
-                        add_input=True,
-                        allow_inplace=True,
-                        use_cached_kv=False,
-                    )
+                    if return_attention:
+                        new_x_train_output, ps_train = self.self_attn_between_items(
+                            x[:, :single_eval_pos].transpose(1, 2),
+                            x[:, :single_eval_pos].transpose(1, 2),
+                            save_peak_mem_factor=save_peak_mem_factor,
+                            cache_kv=cache_trainset_representation,
+                            only_cache_first_head_kv=True,
+                            add_input=True,
+                            allow_inplace=True,
+                            use_cached_kv=False,
+                            return_attention=return_attention,
+                        )
+                    else:
+                        new_x_train_output = self.self_attn_between_items(
+                            x[:, :single_eval_pos].transpose(1, 2),
+                            x[:, :single_eval_pos].transpose(1, 2),
+                            save_peak_mem_factor=save_peak_mem_factor,
+                            cache_kv=cache_trainset_representation,
+                            only_cache_first_head_kv=True,
+                            add_input=True,
+                            allow_inplace=True,
+                            use_cached_kv=False,
+                        )
+                        ps_train = None
                     new_x_train_res = new_x_train_output.transpose(1, 2)
                     if ps_item_specific is None: # If no test ps, use train ps
                         ps_item_specific = ps_train
@@ -398,15 +441,28 @@ class PerFeatureEncoderLayer(Module):
                 attention_src_x = x[:, :single_eval_pos].transpose(1, 2)
 
             # Assuming self.self_attn_between_items now returns (output, ps)
-            output_transposed, ps_item_specific = self.self_attn_between_items(
-                x.transpose(1, 2),
-                attention_src_x,
-                save_peak_mem_factor=save_peak_mem_factor,
-                cache_kv=cache_trainset_representation and single_eval_pos,
-                add_input=True,
-                allow_inplace=True,
-                use_cached_kv=cache_trainset_representation and not single_eval_pos,
-            )
+            if return_attention:
+                output_transposed, ps_item_specific = self.self_attn_between_items(
+                    x.transpose(1, 2),
+                    attention_src_x,
+                    save_peak_mem_factor=save_peak_mem_factor,
+                    cache_kv=cache_trainset_representation and single_eval_pos,
+                    add_input=True,
+                    allow_inplace=True,
+                    use_cached_kv=cache_trainset_representation and not single_eval_pos,
+                    return_attention=return_attention,
+                )
+            else:
+                output_transposed = self.self_attn_between_items(
+                    x.transpose(1, 2),
+                    attention_src_x,
+                    save_peak_mem_factor=save_peak_mem_factor,
+                    cache_kv=cache_trainset_representation and single_eval_pos,
+                    add_input=True,
+                    allow_inplace=True,
+                    use_cached_kv=cache_trainset_representation and not single_eval_pos,
+                )
+                ps_item_specific = None
             return output_transposed.transpose(1, 2), ps_item_specific
 
         mlp_save_peak_mem_factor = (
@@ -487,7 +543,7 @@ class PerFeatureEncoderLayer(Module):
         for i, layer_info in enumerate(sublayer_info):
             sublayer_func = layer_info['func']
             returns_ps = layer_info['returns_ps']
-            # layer_name = layer_info['name'] # For debugging
+            layer_name = layer_info['name'] # For debugging
 
             layer_norm = self.layer_norms[i] # Assuming layer_norms corresponds to this new explicit order
 

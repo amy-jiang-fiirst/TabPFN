@@ -62,6 +62,7 @@ class InferenceEngine(ABC):
         *,
         device: torch.device,
         autocast: bool,
+        return_attention: bool = False,
     ) -> Iterator[tuple[torch.Tensor, EnsembleConfig]]:
         """Iterate over the outputs of the model.
 
@@ -144,6 +145,7 @@ class InferenceEngineOnDemand(InferenceEngine):
         *,
         device: torch.device,
         autocast: bool,
+        return_attention: bool = False,
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         rng = np.random.default_rng(self.static_seed)
         itr = fit_preprocessing(
@@ -194,6 +196,7 @@ class InferenceEngineOnDemand(InferenceEngine):
                     only_return_standard_out=False,  # Ensure full dict is returned
                     categorical_inds=cat_ix,
                     single_eval_pos=len(y_train),
+                    return_attention=return_attention,
                 )
 
             # output is now expected to be a dict
@@ -289,6 +292,7 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
         *,
         device: torch.device,
         autocast: bool,
+        return_attention: bool = False,
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         self.model = self.model.to(device)
         if self.force_inference_dtype is not None:
@@ -336,6 +340,7 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
                     only_return_standard_out=False,  # Ensure full dict is returned
                     categorical_inds=cat_ix,
                     single_eval_pos=len(y_train),
+                    return_attention=return_attention,
                 )
 
             # output is now expected to be a dict
@@ -461,6 +466,7 @@ class InferenceEngineCacheKV(InferenceEngine):
         *,
         device: torch.device,
         autocast: bool,
+        return_attention: bool = False,
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         for preprocessor, model, config, cat_ix, X_train_len in zip(
             self.preprocessors,
@@ -500,6 +506,7 @@ class InferenceEngineCacheKV(InferenceEngine):
                     only_return_standard_out=False,  # Ensure full dict is returned
                     categorical_inds=cat_ix,
                     single_eval_pos=None,
+                    return_attention=return_attention,
                 )
 
             # TODO(eddiebergman): This is not really what we want.

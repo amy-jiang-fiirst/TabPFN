@@ -397,6 +397,7 @@ class PerFeatureTransformer(nn.Module):
             "train_y",
             "test_x",
             "single_eval_pos",
+            "return_attention",
         }
         spurious_kwargs = set(kwargs.keys()) - supported_kwargs
         assert not spurious_kwargs, spurious_kwargs
@@ -433,6 +434,7 @@ class PerFeatureTransformer(nn.Module):
         data_dags: list[Any] | None = None,
         categorical_inds: list[int] | None = None,
         half_layers: bool = False,
+        return_attention: bool = False,
     ) -> Any | dict[str, torch.Tensor | None]:
         """The core forward pass of the model.
 
@@ -639,6 +641,7 @@ class PerFeatureTransformer(nn.Module):
             single_eval_pos=single_eval_pos,
             half_layers=half_layers,
             cache_trainset_representation=self.cache_trainset_representation,
+            return_attention=return_attention,
         )
         encoder_out, ps_encoder = encoder_out_tuple
         final_attention_probs = ps_encoder
@@ -669,6 +672,7 @@ class PerFeatureTransformer(nn.Module):
                 embedded_input[:, single_eval_pos_:],
                 single_eval_pos=0, # single_eval_pos for test part is 0
                 att_src=encoder_out, # encoder_out is the train part to attend to
+                return_attention=return_attention,
             )
             test_encoder_out, ps_decoder = test_encoder_out_tuple
             final_attention_probs = ps_decoder # Prioritize decoder ps

@@ -291,6 +291,7 @@ class MultiHeadAttention(torch.nn.Module):
         only_cache_first_head_kv: bool = False,
         use_cached_kv: bool = False,
         use_second_set_of_queries: bool = False,
+        return_attention: bool = False,
     ):
         """X is the current hidden and has a shape of [batch, ..., seq_len, input_size].
         If keys and values are present in the cache and 'freeze_kv' is not set, they
@@ -353,21 +354,38 @@ class MultiHeadAttention(torch.nn.Module):
                     dtype=x.dtype,
                 )
 
-        output: torch.Tensor = self._compute(
-            x,
-            x_kv,
-            self._k_cache,
-            self._v_cache,
-            self._kv_cache,
-            cache_kv=cache_kv,
-            use_cached_kv=use_cached_kv,
-            add_input=add_input,
-            allow_inplace=allow_inplace,
-            save_peak_mem_factor=save_peak_mem_factor,
-            reuse_first_head_kv=reuse_first_head_kv,
-            use_second_set_of_queries=use_second_set_of_queries,
-        )
-        return output.reshape(x_shape_after_transpose[:-1] + output.shape[-1:])
+        if return_attention:
+            # When we need attention weights, bypass memory caching to avoid tuple handling issues
+            output, attention_probs = self._compute_with_attention(
+                x,
+                x_kv,
+                self._k_cache,
+                self._v_cache,
+                self._kv_cache,
+                cache_kv=cache_kv,
+                use_cached_kv=use_cached_kv,
+                reuse_first_head_kv=reuse_first_head_kv,
+                use_second_set_of_queries=use_second_set_of_queries,
+            )
+            output_reshaped = output.reshape(x_shape_after_transpose[:-1] + output.shape[-1:])
+            return output_reshaped, attention_probs
+        else:
+            output = self._compute(
+                x,
+                x_kv,
+                self._k_cache,
+                self._v_cache,
+                self._kv_cache,
+                cache_kv=cache_kv,
+                use_cached_kv=use_cached_kv,
+                add_input=add_input,
+                allow_inplace=allow_inplace,
+                save_peak_mem_factor=save_peak_mem_factor,
+                reuse_first_head_kv=reuse_first_head_kv,
+                use_second_set_of_queries=use_second_set_of_queries,
+                return_attention=return_attention,
+            )
+            return output.reshape(x_shape_after_transpose[:-1] + output.shape[-1:])
 
     def compute_qkv(  # noqa: PLR0912, C901
         self,
@@ -474,6 +492,51 @@ class MultiHeadAttention(torch.nn.Module):
 
         return q, k, v, kv, qkv
 
+    def _compute_with_attention(
+        self,
+        x: torch.Tensor,
+        x_kv: torch.Tensor | None,
+        k_cache: torch.Tensor | None,
+        v_cache: torch.Tensor | None,
+        kv_cache: torch.Tensor | None,
+        *,
+        cache_kv: bool,
+        use_cached_kv: bool,
+        reuse_first_head_kv: bool,
+        use_second_set_of_queries: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Attention computation that returns attention weights.
+        This method bypasses memory caching to avoid tuple handling issues.
+        """
+        q, k, v, kv, qkv = self.compute_qkv(
+            x,
+            x_kv,
+            k_cache,
+            v_cache,
+            kv_cache,
+            cache_kv=cache_kv,
+            use_cached_kv=use_cached_kv,
+            reuse_first_head_kv=reuse_first_head_kv,
+            use_second_set_of_queries=use_second_set_of_queries,
+        )
+        attention_head_outputs, attention_probs = MultiHeadAttention.compute_attention_heads(
+            q,
+            k,
+            v,
+            kv,
+            qkv,
+            self.dropout_p,
+            self.softmax_scale,
+            return_attention=True,
+        )
+        output = torch.einsum(
+            "... h d, h d s -> ... s",
+            attention_head_outputs,
+            self._w_out,
+        )
+        
+        return output, attention_probs
+
     @support_save_peak_mem_factor  # type: ignore
     def _compute(
         self,
@@ -487,7 +550,8 @@ class MultiHeadAttention(torch.nn.Module):
         use_cached_kv: bool,
         reuse_first_head_kv: bool,
         use_second_set_of_queries: bool,
-    ) -> torch.Tensor:
+        return_attention: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None]:
         """Attention computation.
         Called by 'forward', potentially on shards, once shapes have been normalized.
         """
@@ -502,7 +566,7 @@ class MultiHeadAttention(torch.nn.Module):
             reuse_first_head_kv=reuse_first_head_kv,
             use_second_set_of_queries=use_second_set_of_queries,
         )
-        attention_head_outputs, _ = MultiHeadAttention.compute_attention_heads(
+        attention_head_outputs, attention_probs = MultiHeadAttention.compute_attention_heads(
             q,
             k,
             v,
@@ -510,12 +574,17 @@ class MultiHeadAttention(torch.nn.Module):
             qkv,
             self.dropout_p,
             self.softmax_scale,
+            return_attention,
         )
-        return torch.einsum(
+        output = torch.einsum(
             "... h d, h d s -> ... s",
             attention_head_outputs,
             self._w_out,
         )
+        
+        if return_attention:
+            return output, attention_probs
+        return output
 
     def _rearrange_inputs_to_flat_batch(
         self,
@@ -554,6 +623,7 @@ class MultiHeadAttention(torch.nn.Module):
         qkv: torch.Tensor | None,
         dropout_p: float | None = None,
         softmax_scale: float | None = None,
+        return_attention: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         assert (k is None) == (v is None)
         assert sum([qkv is None, kv is None, k is None and v is None]) == 2
@@ -576,15 +646,19 @@ class MultiHeadAttention(torch.nn.Module):
         if dropout_p is None:
             dropout_p = 0.0  # TODO: necessary?
 
+        # Force manual computation when attention weights are needed for better compatibility
         use_flash_attention = (
             HAVE_FLASH_ATTN
             and torch.cuda.is_available()
             and q.dtype == k.dtype == v.dtype == torch.float16
+            and not return_attention  # Disable flash attention when we need attention weights
         )
 
         # this string comparison is reliable, as it does not compare to a subversion
         TORCH_2_ATTENTION_POSSIBLE = (
-            torch.__version__ >= "2" and torch.cuda.is_available()
+            torch.__version__ >= "2" 
+            and torch.cuda.is_available()
+            and not return_attention  # Disable PyTorch 2.0 attention when we need attention weights
         )
         USE_TORCH_2_GQA = False
         if TORCH_2_ATTENTION_POSSIBLE:
@@ -750,6 +824,7 @@ class MultiHeadAttention(torch.nn.Module):
             ps = torch.softmax(logits, dim=2)
             ps = torch.dropout(ps, dropout_p, train=True)
             attention_head_outputs = torch.einsum("b q k h, b k h d -> b q h d", ps, v)
+            print(f"DEBUG: ps shape: {ps.shape}, ps is None: {ps is None}")
 
         return attention_head_outputs.reshape(
             batch_size,
