@@ -1,0 +1,208 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TabPFN Attention Visualizations</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .header {
+            text-align: center;
+            background-color: #2c3e50;
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+        .gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+        }
+        .image-card {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .image-card img {
+            width: 100%;
+            height: auto;
+            border-radius: 5px;
+        }
+        .image-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #2c3e50;
+        }
+        .summary {
+            background-color: #e8f5e8;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+        .feature-list {
+            list-style-type: none;
+            padding: 0;
+        }
+        .feature-list li {
+            padding: 5px 0;
+        }
+        .feature-list li:before {
+            content: "✅ ";
+            color: green;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎯 TabPFN Enhanced Attention Visualizations</h1>
+        <p>Complete debugging and visualization of attention maps</p>
+    </div>
+    
+    <div class="summary">
+        <h2>🎉 Successfully Implemented Features</h2>
+        <ul class="feature-list">
+            <li>Fixed PyTorch 2.7+ compatibility issue with scaled_dot_product_attention</li>
+            <li>Layer-specific attention extraction (specify layer 0-11 or None for all)</li>
+            <li>Head-specific attention extraction (specify head 0-N or None for all)</li>
+            <li>Attention aggregation methods (mean or max across heads)</li>
+            <li>Feature-wise attention maps with original feature names and target variables</li>
+            <li>Sample-wise attention maps with sample indices and train/test indicators</li>
+            <li>Comprehensive visualization classes and interactive demos</li>
+        </ul>
+    </div>
+    
+    <div class="gallery">
+
+        <div class="image-card">
+            <div class="image-title">All Layers All Heads Mean Features</div>
+            <img src="all_layers_all_heads_mean_features.png" alt="All Layers All Heads Mean Features">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">All Layers All Heads Mean Samples</div>
+            <img src="all_layers_all_heads_mean_samples.png" alt="All Layers All Heads Mean Samples">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">California Housing Layer 0 Final Heatmap</div>
+            <img src="california_housing_layer_0_final_heatmap.png" alt="California Housing Layer 0 Final Heatmap">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">California Housing Layer 0 Heatmap</div>
+            <img src="california_housing_layer_0_heatmap.png" alt="California Housing Layer 0 Heatmap">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Demo: All Layers All Heads (Mean)</div>
+            <img src="demo_all_layers_all_heads_(mean).png" alt="Demo: All Layers All Heads (Mean)">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Demo: Layer 0 All Heads (Mean)</div>
+            <img src="demo_layer_0_all_heads_(mean).png" alt="Demo: Layer 0 All Heads (Mean)">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Demo: Layer 11 All Heads (Mean)</div>
+            <img src="demo_layer_11_all_heads_(mean).png" alt="Demo: Layer 11 All Heads (Mean)">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Demo: Layer 5 All Heads (Max)</div>
+            <img src="demo_layer_5_all_heads_(max).png" alt="Demo: Layer 5 All Heads (Max)">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Demo: Layer 5 Head 0</div>
+            <img src="demo_layer_5_head_0.png" alt="Demo: Layer 5 Head 0">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Enhanced: Feature Attention Comparison</div>
+            <img src="enhanced_feature_attention_comparison.png" alt="Enhanced: Feature Attention Comparison">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Enhanced: Item Attention Comparison</div>
+            <img src="enhanced_item_attention_comparison.png" alt="Enhanced: Item Attention Comparison">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Enhanced: Layer Comparison</div>
+            <img src="enhanced_layer_comparison.png" alt="Enhanced: Layer Comparison">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Example Feature Attention</div>
+            <img src="example_feature_attention.png" alt="Example Feature Attention">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Example Item Attention</div>
+            <img src="example_item_attention.png" alt="Example Item Attention">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Example Layer Comparison</div>
+            <img src="example_layer_comparison.png" alt="Example Layer Comparison">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Feature Importance Attention</div>
+            <img src="feature_importance_attention.png" alt="Feature Importance Attention">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Final Demo: Attention</div>
+            <img src="final_demo_attention.png" alt="Final Demo: Attention">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Head Comparison Features</div>
+            <img src="head_comparison_features.png" alt="Head Comparison Features">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Layer11 Head0 Features</div>
+            <img src="layer11_head0_features.png" alt="Layer11 Head0 Features">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Layer11 Head0 Samples</div>
+            <img src="layer11_head0_samples.png" alt="Layer11 Head0 Samples">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Layer5 All Heads Max Features</div>
+            <img src="layer5_all_heads_max_features.png" alt="Layer5 All Heads Max Features">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Layer5 All Heads Max Samples</div>
+            <img src="layer5_all_heads_max_samples.png" alt="Layer5 All Heads Max Samples">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Layer Comparison Features</div>
+            <img src="layer_comparison_features.png" alt="Layer Comparison Features">
+        </div>
+
+        <div class="image-card">
+            <div class="image-title">Layer Comparison Items</div>
+            <img src="layer_comparison_items.png" alt="Layer Comparison Items">
+        </div>
+
+    </div>
+    
+    <div style="margin-top: 40px; text-align: center; color: #666;">
+        <p>Generated by TabPFN Enhanced Attention Visualization System</p>
+        <p>See ATTENTION_VISUALIZATION_GUIDE.md for detailed documentation</p>
+    </div>
+</body>
+</html>
