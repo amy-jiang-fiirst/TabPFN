@@ -83,13 +83,21 @@ class LayerStack(nn.Module):
             ).item()
 
         attention_probs: torch.Tensor | None = None
-        for layer in self.layers[:n_layers]:
+        for layer_idx, layer in enumerate(self.layers[:n_layers]):
+            # Add current layer index to kwargs for attention filtering
+            layer_kwargs = kwargs.copy()
+            layer_kwargs['current_layer_idx'] = layer_idx
+            
             if self.recompute_each_layer and x.requires_grad:
                 # layer.forward now returns (output, ps)
                 # checkpoint should handle functions returning tuples
-                x, attention_probs = checkpoint(partial(layer, **kwargs), x, use_reentrant=False)  # type: ignore
+                x, layer_attention = checkpoint(partial(layer, **layer_kwargs), x, use_reentrant=False)  # type: ignore
             else:
-                x, attention_probs = layer(x, **kwargs)
+                x, layer_attention = layer(x, **layer_kwargs)
+            
+            # Only update attention_probs if the layer returned non-None attention
+            if layer_attention is not None:
+                attention_probs = layer_attention
 
         return x, attention_probs
 
@@ -398,6 +406,10 @@ class PerFeatureTransformer(nn.Module):
             "test_x",
             "single_eval_pos",
             "return_attention",
+            "attention_layer",
+            "attention_head",
+            "attention_aggregation",
+            "attention_type",
         }
         spurious_kwargs = set(kwargs.keys()) - supported_kwargs
         assert not spurious_kwargs, spurious_kwargs
@@ -435,6 +447,10 @@ class PerFeatureTransformer(nn.Module):
         categorical_inds: list[int] | None = None,
         half_layers: bool = False,
         return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
+        attention_type: str = "features",  # "features" or "items"
     ) -> Any | dict[str, torch.Tensor | None]:
         """The core forward pass of the model.
 
@@ -642,6 +658,10 @@ class PerFeatureTransformer(nn.Module):
             half_layers=half_layers,
             cache_trainset_representation=self.cache_trainset_representation,
             return_attention=return_attention,
+            attention_layer=attention_layer,
+            attention_head=attention_head,
+            attention_aggregation=attention_aggregation,
+            attention_type=attention_type,
         )
         encoder_out, ps_encoder = encoder_out_tuple
         final_attention_probs = ps_encoder
@@ -673,6 +693,10 @@ class PerFeatureTransformer(nn.Module):
                 single_eval_pos=0, # single_eval_pos for test part is 0
                 att_src=encoder_out, # encoder_out is the train part to attend to
                 return_attention=return_attention,
+                attention_layer=attention_layer,
+                attention_head=attention_head,
+                attention_aggregation=attention_aggregation,
+                attention_type=attention_type,
             )
             test_encoder_out, ps_decoder = test_encoder_out_tuple
             final_attention_probs = ps_decoder # Prioritize decoder ps

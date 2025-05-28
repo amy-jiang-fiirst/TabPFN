@@ -552,6 +552,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         output_type: Literal["mean", "median", "mode"] = "mean",
         quantiles: list[float] | None = None,
         return_attention: Literal[False] = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: Literal["mean", "max"] = "mean",
+        attention_type: Literal["features", "items"] = "features",
     ) -> np.ndarray: ...
 
     @overload
@@ -562,6 +566,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         output_type: Literal["mean", "median", "mode"] = "mean",
         quantiles: list[float] | None = None,
         return_attention: Literal[True],
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: Literal["mean", "max"] = "mean",
+        attention_type: Literal["features", "items"] = "features",
     ) -> tuple[np.ndarray, list[torch.Tensor | None]]: ...
 
     @overload
@@ -572,6 +580,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         output_type: Literal["quantiles"],
         quantiles: list[float] | None = None,
         return_attention: Literal[False] = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: Literal["mean", "max"] = "mean",
+        attention_type: Literal["features", "items"] = "features",
     ) -> list[np.ndarray]: ...
 
     @overload
@@ -582,6 +594,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         output_type: Literal["quantiles"],
         quantiles: list[float] | None = None,
         return_attention: Literal[True],
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: Literal["mean", "max"] = "mean",
+        attention_type: Literal["features", "items"] = "features",
     ) -> tuple[list[np.ndarray], list[torch.Tensor | None]]: ...
 
     @overload
@@ -592,6 +608,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         output_type: Literal["main"],
         quantiles: list[float] | None = None,
         return_attention: Literal[False] = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: Literal["mean", "max"] = "mean",
+        attention_type: Literal["features", "items"] = "features",
     ) -> MainOutputDict: ...
 
     @overload
@@ -602,6 +622,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         output_type: Literal["main"],
         quantiles: list[float] | None = None,
         return_attention: Literal[True],
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: Literal["mean", "max"] = "mean",
+        attention_type: Literal["features", "items"] = "features",
     ) -> tuple[MainOutputDict, list[torch.Tensor | None]]: ...
 
     @overload
@@ -612,6 +636,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         output_type: Literal["full"],
         quantiles: list[float] | None = None,
         return_attention: Literal[False] = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: Literal["mean", "max"] = "mean",
+        attention_type: Literal["features", "items"] = "features",
     ) -> FullOutputDict: ...
 
     @overload
@@ -622,6 +650,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         output_type: Literal["full"],
         quantiles: list[float] | None = None,
         return_attention: Literal[True],
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: Literal["mean", "max"] = "mean",
+        attention_type: Literal["features", "items"] = "features",
     ) -> tuple[FullOutputDict, list[torch.Tensor | None]]: ...
 
     # FIXME: improve to not have noqa C901, PLR0912
@@ -641,6 +673,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         ] = "mean",
         quantiles: list[float] | None = None,
         return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: Literal["mean", "max"] = "mean",
+        attention_type: Literal["features", "items"] = "features",
     ) -> (
         np.ndarray
         | list[np.ndarray]
@@ -676,6 +712,14 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
                 the input order.
             return_attention: If True, also returns the attention probabilities
                 from the model. Defaults to False.
+            attention_layer: Specific layer to extract attention from. If None,
+                returns attention from the final layer. Defaults to None.
+            attention_head: Specific attention head to extract. If None,
+                aggregates across all heads using attention_aggregation method.
+                Defaults to None.
+            attention_aggregation: Method to aggregate attention across heads.
+                Either "mean" or "max". Only used when attention_head is None.
+                Defaults to "mean".
 
         Returns:
             The predicted target variable or a list of predictions per quantile.
@@ -707,6 +751,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
             device=self.device_,
             autocast=self.use_autocast_,
             return_attention=return_attention,
+            attention_layer=attention_layer,
+            attention_head=attention_head,
+            attention_aggregation=attention_aggregation,
+            attention_type=attention_type,
         ):
             assert isinstance(output_dict, dict), "Model output should be a dictionary."
             current_logits = output_dict["standard"]

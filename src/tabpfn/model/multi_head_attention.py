@@ -292,6 +292,9 @@ class MultiHeadAttention(torch.nn.Module):
         use_cached_kv: bool = False,
         use_second_set_of_queries: bool = False,
         return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
     ):
         """X is the current hidden and has a shape of [batch, ..., seq_len, input_size].
         If keys and values are present in the cache and 'freeze_kv' is not set, they
@@ -366,6 +369,9 @@ class MultiHeadAttention(torch.nn.Module):
                 use_cached_kv=use_cached_kv,
                 reuse_first_head_kv=reuse_first_head_kv,
                 use_second_set_of_queries=use_second_set_of_queries,
+                attention_layer=attention_layer,
+                attention_head=attention_head,
+                attention_aggregation=attention_aggregation,
             )
             output_reshaped = output.reshape(x_shape_after_transpose[:-1] + output.shape[-1:])
             return output_reshaped, attention_probs
@@ -504,6 +510,9 @@ class MultiHeadAttention(torch.nn.Module):
         use_cached_kv: bool,
         reuse_first_head_kv: bool,
         use_second_set_of_queries: bool,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Attention computation that returns attention weights.
         This method bypasses memory caching to avoid tuple handling issues.
@@ -528,6 +537,9 @@ class MultiHeadAttention(torch.nn.Module):
             self.dropout_p,
             self.softmax_scale,
             return_attention=True,
+            attention_layer=attention_layer,
+            attention_head=attention_head,
+            attention_aggregation=attention_aggregation,
         )
         output = torch.einsum(
             "... h d, h d s -> ... s",
@@ -575,6 +587,9 @@ class MultiHeadAttention(torch.nn.Module):
             self.dropout_p,
             self.softmax_scale,
             return_attention,
+            attention_layer=None,  # Not used in _compute method
+            attention_head=None,   # Not used in _compute method
+            attention_aggregation="mean",  # Default
         )
         output = torch.einsum(
             "... h d, h d s -> ... s",
@@ -624,6 +639,9 @@ class MultiHeadAttention(torch.nn.Module):
         dropout_p: float | None = None,
         softmax_scale: float | None = None,
         return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         assert (k is None) == (v is None)
         assert sum([qkv is None, kv is None, k is None and v is None]) == 2
@@ -824,7 +842,24 @@ class MultiHeadAttention(torch.nn.Module):
             ps = torch.softmax(logits, dim=2)
             ps = torch.dropout(ps, dropout_p, train=True)
             attention_head_outputs = torch.einsum("b q k h, b k h d -> b q h d", ps, v)
-            print(f"DEBUG: ps shape: {ps.shape}, ps is None: {ps is None}")
+
+        # Apply layer and head filtering if specified
+        if return_attention and ps is not None:
+            # ps shape: [batch_size, seqlen_q, seqlen_k, nhead]
+            if attention_head is not None:
+                # Extract specific head
+                if attention_head < ps.shape[-1]:
+                    ps = ps[..., attention_head:attention_head+1]  # Keep dimension
+                else:
+                    # If head index is out of range, return None
+                    ps = None
+            
+            if ps is not None and attention_aggregation == "max":
+                # Apply max aggregation across heads
+                ps = torch.max(ps, dim=-1, keepdim=True)[0]
+            elif ps is not None and attention_aggregation == "mean":
+                # Apply mean aggregation across heads (default)
+                ps = torch.mean(ps, dim=-1, keepdim=True)
 
         return attention_head_outputs.reshape(
             batch_size,

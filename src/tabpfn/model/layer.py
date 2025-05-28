@@ -277,6 +277,11 @@ class PerFeatureEncoderLayer(Module):
         cache_trainset_representation: bool = False,
         att_src: Tensor | None = None,
         return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
+        current_layer_idx: int | None = None,
+        attention_type: str = "features",  # "features" or "items"
     ) -> tuple[Tensor, Tensor | None]:
         """Pass the input through the encoder layer.
         
@@ -314,6 +319,14 @@ class PerFeatureEncoderLayer(Module):
             assert self.self_attn_between_items.has_cached_kv
             save_peak_mem_factor = None
 
+        # Check if we should extract attention from this layer
+        extract_attention_from_this_layer = (
+            return_attention and 
+            (attention_layer is None or current_layer_idx == attention_layer)
+        )
+        
+
+
         if att_src is not None:
             assert (
                 not self.multiquery_item_attention_for_test_set
@@ -325,6 +338,8 @@ class PerFeatureEncoderLayer(Module):
             )
 
         ps_final: Tensor | None = None
+        ps_feature_attention: Tensor | None = None
+        ps_item_attention: Tensor | None = None
 
         if self.self_attn_between_features is None:
             assert not cache_trainset_representation, "Not implemented yet."
@@ -337,13 +352,16 @@ class PerFeatureEncoderLayer(Module):
             assert self.self_attn_between_features is not None
             # Assuming self.self_attn_between_features now returns (output, ps)
             # The subtask description implies this is the case for "self.self_attn" calls
-            if return_attention:
+            if extract_attention_from_this_layer:
                 output, ps = self.self_attn_between_features(
                     x,
                     save_peak_mem_factor=save_peak_mem_factor,
                     add_input=True,
                     allow_inplace=True,
-                    return_attention=return_attention,
+                    return_attention=True,
+                    attention_layer=attention_layer,
+                    attention_head=attention_head,
+                    attention_aggregation=attention_aggregation,
                 )
                 return output, ps
             else:
@@ -352,6 +370,10 @@ class PerFeatureEncoderLayer(Module):
                     save_peak_mem_factor=save_peak_mem_factor,
                     add_input=True,
                     allow_inplace=True,
+                    return_attention=False,
+                    attention_layer=attention_layer,
+                    attention_head=attention_head,
+                    attention_aggregation=attention_aggregation,
                 )
                 return output, None
 
@@ -362,7 +384,7 @@ class PerFeatureEncoderLayer(Module):
             if self.multiquery_item_attention_for_test_set:
                 new_x_test_res, new_x_train_res = None, None
                 if single_eval_pos < x.shape[1]:
-                    if return_attention:
+                    if extract_attention_from_this_layer:
                         new_x_test_output, ps_test = self.self_attn_between_items(
                             x[:, single_eval_pos:].transpose(1, 2),
                             x[:, :single_eval_pos].transpose(1, 2)
@@ -375,7 +397,10 @@ class PerFeatureEncoderLayer(Module):
                             use_cached_kv=not single_eval_pos,
                             reuse_first_head_kv=True,
                             use_second_set_of_queries=self.two_sets_of_queries,
-                            return_attention=return_attention,
+                            return_attention=True,
+                            attention_layer=attention_layer,
+                            attention_head=attention_head,
+                            attention_aggregation=attention_aggregation,
                         )
                     else:
                         new_x_test_output = self.self_attn_between_items(
@@ -390,6 +415,10 @@ class PerFeatureEncoderLayer(Module):
                             use_cached_kv=not single_eval_pos,
                             reuse_first_head_kv=True,
                             use_second_set_of_queries=self.two_sets_of_queries,
+                            return_attention=False,
+                            attention_layer=attention_layer,
+                            attention_head=attention_head,
+                            attention_aggregation=attention_aggregation,
                         )
                         ps_test = None
                     new_x_test_res = new_x_test_output.transpose(1, 2)
@@ -398,7 +427,7 @@ class PerFeatureEncoderLayer(Module):
                     new_x_test_res = None
 
                 if single_eval_pos:
-                    if return_attention:
+                    if extract_attention_from_this_layer:
                         new_x_train_output, ps_train = self.self_attn_between_items(
                             x[:, :single_eval_pos].transpose(1, 2),
                             x[:, :single_eval_pos].transpose(1, 2),
@@ -408,7 +437,10 @@ class PerFeatureEncoderLayer(Module):
                             add_input=True,
                             allow_inplace=True,
                             use_cached_kv=False,
-                            return_attention=return_attention,
+                            return_attention=True,
+                            attention_layer=attention_layer,
+                            attention_head=attention_head,
+                            attention_aggregation=attention_aggregation,
                         )
                     else:
                         new_x_train_output = self.self_attn_between_items(
@@ -420,6 +452,10 @@ class PerFeatureEncoderLayer(Module):
                             add_input=True,
                             allow_inplace=True,
                             use_cached_kv=False,
+                            return_attention=False,
+                            attention_layer=attention_layer,
+                            attention_head=attention_head,
+                            attention_aggregation=attention_aggregation,
                         )
                         ps_train = None
                     new_x_train_res = new_x_train_output.transpose(1, 2)
@@ -441,7 +477,7 @@ class PerFeatureEncoderLayer(Module):
                 attention_src_x = x[:, :single_eval_pos].transpose(1, 2)
 
             # Assuming self.self_attn_between_items now returns (output, ps)
-            if return_attention:
+            if extract_attention_from_this_layer:
                 output_transposed, ps_item_specific = self.self_attn_between_items(
                     x.transpose(1, 2),
                     attention_src_x,
@@ -450,7 +486,10 @@ class PerFeatureEncoderLayer(Module):
                     add_input=True,
                     allow_inplace=True,
                     use_cached_kv=cache_trainset_representation and not single_eval_pos,
-                    return_attention=return_attention,
+                    return_attention=True,
+                    attention_layer=attention_layer,
+                    attention_head=attention_head,
+                    attention_aggregation=attention_aggregation,
                 )
             else:
                 output_transposed = self.self_attn_between_items(
@@ -461,6 +500,10 @@ class PerFeatureEncoderLayer(Module):
                     add_input=True,
                     allow_inplace=True,
                     use_cached_kv=cache_trainset_representation and not single_eval_pos,
+                    return_attention=False,
+                    attention_layer=attention_layer,
+                    attention_head=attention_head,
+                    attention_aggregation=attention_aggregation,
                 )
                 ps_item_specific = None
             return output_transposed.transpose(1, 2), ps_item_specific
@@ -563,6 +606,11 @@ class PerFeatureEncoderLayer(Module):
                 state, current_ps = sublayer_func(state)
                 if current_ps is not None: # Update ps_final if current sublayer provides ps
                     ps_final = current_ps
+                    # Store specific attention types for later selection
+                    if layer_name == 'attn_features':
+                        ps_feature_attention = current_ps
+                    elif layer_name == 'attn_items':
+                        ps_item_attention = current_ps
             else:
                 state = sublayer_func(state)
 
@@ -573,7 +621,17 @@ class PerFeatureEncoderLayer(Module):
                     save_peak_mem_factor=save_peak_mem_factor,
                 )
 
-        return state, ps_final
+        # Select the appropriate attention type to return
+        if extract_attention_from_this_layer:
+            if attention_type == "features" and ps_feature_attention is not None:
+                return state, ps_feature_attention
+            elif attention_type == "items" and ps_item_attention is not None:
+                return state, ps_item_attention
+            else:
+                # Fallback to the last attention computed
+                return state, ps_final
+        else:
+            return state, ps_final
 
     def empty_trainset_representation_cache(self) -> None:
         """Empty the trainset representation cache."""

@@ -63,6 +63,10 @@ class InferenceEngine(ABC):
         device: torch.device,
         autocast: bool,
         return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
+        attention_type: str = "features",
     ) -> Iterator[tuple[torch.Tensor, EnsembleConfig]]:
         """Iterate over the outputs of the model.
 
@@ -146,6 +150,10 @@ class InferenceEngineOnDemand(InferenceEngine):
         device: torch.device,
         autocast: bool,
         return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
+        attention_type: str = "features",
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         rng = np.random.default_rng(self.static_seed)
         itr = fit_preprocessing(
@@ -197,6 +205,10 @@ class InferenceEngineOnDemand(InferenceEngine):
                     categorical_inds=cat_ix,
                     single_eval_pos=len(y_train),
                     return_attention=return_attention,
+                    attention_layer=attention_layer,
+                    attention_head=attention_head,
+                    attention_aggregation=attention_aggregation,
+                    attention_type=attention_type,
                 )
 
             # output is now expected to be a dict
@@ -293,6 +305,10 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
         device: torch.device,
         autocast: bool,
         return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
+        attention_type: str = "features",
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         self.model = self.model.to(device)
         if self.force_inference_dtype is not None:
@@ -341,6 +357,10 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
                     categorical_inds=cat_ix,
                     single_eval_pos=len(y_train),
                     return_attention=return_attention,
+                    attention_layer=attention_layer,
+                    attention_head=attention_head,
+                    attention_aggregation=attention_aggregation,
+                    attention_type=attention_type,
                 )
 
             # output is now expected to be a dict
@@ -467,6 +487,10 @@ class InferenceEngineCacheKV(InferenceEngine):
         device: torch.device,
         autocast: bool,
         return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
+        attention_type: str = "features",
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         for preprocessor, model, config, cat_ix, X_train_len in zip(
             self.preprocessors,
@@ -507,6 +531,10 @@ class InferenceEngineCacheKV(InferenceEngine):
                     categorical_inds=cat_ix,
                     single_eval_pos=None,
                     return_attention=return_attention,
+                    attention_layer=attention_layer,
+                    attention_head=attention_head,
+                    attention_aggregation=attention_aggregation,
+                    attention_type=attention_type,
                 )
 
             # TODO(eddiebergman): This is not really what we want.
