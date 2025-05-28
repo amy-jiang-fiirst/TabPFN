@@ -62,6 +62,11 @@ class InferenceEngine(ABC):
         *,
         device: torch.device,
         autocast: bool,
+        return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
+        attention_type: str = "features",
     ) -> Iterator[tuple[torch.Tensor, EnsembleConfig]]:
         """Iterate over the outputs of the model.
 
@@ -144,7 +149,11 @@ class InferenceEngineOnDemand(InferenceEngine):
         *,
         device: torch.device,
         autocast: bool,
-        only_return_standard_out: bool = True,
+        return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
+        attention_type: str = "features",
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         rng = np.random.default_rng(self.static_seed)
         itr = fit_preprocessing(
@@ -192,12 +201,21 @@ class InferenceEngineOnDemand(InferenceEngine):
             ):
                 output = self.model(
                     *(style, X_full, y_train),
-                    only_return_standard_out=only_return_standard_out,
+                    only_return_standard_out=False,  # Ensure full dict is returned
                     categorical_inds=cat_ix,
                     single_eval_pos=len(y_train),
+                    return_attention=return_attention,
+                    attention_layer=attention_layer,
+                    attention_head=attention_head,
+                    attention_aggregation=attention_aggregation,
+                    attention_type=attention_type,
                 )
 
-            output = output if isinstance(output, dict) else output.squeeze(1)
+            # output is now expected to be a dict
+            # The original line `output = output if isinstance(output, dict) else output.squeeze(1)`
+            # is fine; if it's a dict, it stays a dict. If somehow it's not (e.g. an error),
+            # it would attempt to squeeze, but model.forward with only_return_standard_out=False
+            # should always return a dict.
 
             yield output, config
 
@@ -286,7 +304,11 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
         *,
         device: torch.device,
         autocast: bool,
-        only_return_standard_out: bool = True,
+        return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
+        attention_type: str = "features",
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         self.model = self.model.to(device)
         if self.force_inference_dtype is not None:
@@ -331,12 +353,17 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
             ):
                 output = self.model(
                     *(style, X_full, y_train),
-                    only_return_standard_out=only_return_standard_out,
+                    only_return_standard_out=False,  # Ensure full dict is returned
                     categorical_inds=cat_ix,
                     single_eval_pos=len(y_train),
+                    return_attention=return_attention,
+                    attention_layer=attention_layer,
+                    attention_head=attention_head,
+                    attention_aggregation=attention_aggregation,
+                    attention_type=attention_type,
                 )
 
-            output = output if isinstance(output, dict) else output.squeeze(1)
+            # output is now expected to be a dict
 
             yield output, config
 
@@ -459,7 +486,11 @@ class InferenceEngineCacheKV(InferenceEngine):
         *,
         device: torch.device,
         autocast: bool,
-        only_return_standard_out: bool = True,
+        return_attention: bool = False,
+        attention_layer: int | None = None,
+        attention_head: int | None = None,
+        attention_aggregation: str = "mean",
+        attention_type: str = "features",
     ) -> Iterator[tuple[torch.Tensor | dict, EnsembleConfig]]:
         for preprocessor, model, config, cat_ix, X_train_len in zip(
             self.preprocessors,
@@ -496,15 +527,20 @@ class InferenceEngineCacheKV(InferenceEngine):
             ):
                 output = model(
                     *(style, X_test, None),
-                    only_return_standard_out=only_return_standard_out,
+                    only_return_standard_out=False,  # Ensure full dict is returned
                     categorical_inds=cat_ix,
                     single_eval_pos=None,
+                    return_attention=return_attention,
+                    attention_layer=attention_layer,
+                    attention_head=attention_head,
+                    attention_aggregation=attention_aggregation,
+                    attention_type=attention_type,
                 )
 
             # TODO(eddiebergman): This is not really what we want.
             # We'd rather just say unload from GPU, we already have it available on CPU.
             model = model.cpu()  # noqa: PLW2901
 
-            output = output if isinstance(output, dict) else output.squeeze(1)
+            # output is now expected to be a dict
 
             yield output, config

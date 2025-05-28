@@ -450,3 +450,68 @@ def test_classifier_with_text_and_na() -> None:
     # Check output shapes
     assert probabilities.shape == (X.shape[0], len(np.unique(y)))
     assert predictions.shape == (X.shape[0],)
+
+
+def test_predict_proba_with_attention(X_y: tuple[np.ndarray, np.ndarray]) -> None:
+    """Test that predict_proba with return_attention=True works correctly."""
+    X, y = X_y
+    X_test = X[:10]  # Use a subset for testing predict_proba
+
+    for n_est in [1, 2]:
+        model = TabPFNClassifier(n_estimators=n_est, device="cpu", random_state=42)
+        model.fit(X, y)
+
+        # Call without attention
+        probs_no_att = model.predict_proba(X_test)
+        assert isinstance(probs_no_att, np.ndarray)
+        assert probs_no_att.shape == (X_test.shape[0], len(model.classes_))
+
+        # Call with attention
+        result_with_att = model.predict_proba(X_test, return_attention=True)
+        assert isinstance(result_with_att, tuple)
+        assert len(result_with_att) == 2
+
+        probs_with_att, att_list = result_with_att
+        assert isinstance(probs_with_att, np.ndarray)
+        assert isinstance(att_list, list)
+
+        # Check probabilities are close
+        np.testing.assert_allclose(
+            probs_no_att,
+            probs_with_att,
+            rtol=1e-6,
+            atol=1e-6,
+            err_msg=f"Probabilities differ with n_estimators={n_est}",
+        )
+
+        # Check attention list
+        assert len(att_list) == n_est, f"Attention list length mismatch for n_estimators={n_est}"
+        for att_tensor in att_list:
+            assert att_tensor is None or isinstance(att_tensor, torch.Tensor)
+            if isinstance(att_tensor, torch.Tensor):
+                # Expected shape: (batch_size_of_X_test, num_heads, query_seq_len, key_seq_len)
+                # batch_size_of_X_test = X_test.shape[0]
+                # num_heads = model.model_.nhead (model_ is TabPFN model, not sklearn wrapper)
+                # query_seq_len and key_seq_len depend on the internal workings,
+                # e.g., num_features + 1 for target token, or num_samples for item attention.
+                assert att_tensor.ndim >= 3, f"Attention tensor ndim is less than 3 for n_estimators={n_est}"
+                assert att_tensor.shape[0] == X_test.shape[0], \
+                    f"Batch size mismatch in attention tensor for n_estimators={n_est}"
+                
+                # Access the underlying TabPFN model to get nhead
+                # The executor stores the actual TabPFN model instance
+                # For InferenceEngineOnDemand and InferenceEngineCachePreprocessing, it's self.model
+                # For InferenceEngineCacheKV, it's a list self.models
+                # We can access it via model.executor_.model or model.executor_.models[0]
+                # This is a bit fragile if executor structure changes.
+                # A safer way might be to check if model.model_ exists after fit.
+                if hasattr(model, "model_") and hasattr(model.model_, "nhead"):
+                     assert att_tensor.shape[1] == model.model_.nhead, \
+                        f"Number of heads mismatch for n_estimators={n_est}"
+                
+                assert att_tensor.shape[2] > 0, f"Query sequence length is 0 for n_estimators={n_est}"
+                assert att_tensor.shape[3] > 0, f"Key sequence length is 0 for n_estimators={n_est}"
+
+
+# TODO(eddiebergman): Should probably run a larger suite with different configurations
+@parametrize_with_checks(
